@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -16,8 +16,8 @@ class Config:
     def load(cls) -> Config:
         cfg = cls()
         cfg.anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        cfg.model = os.environ.get("K9S_LLM_MODEL", cfg.model)
-        cfg.namespace = os.environ.get("K9S_LLM_NAMESPACE", cfg.namespace)
+        cfg.model = os.environ.get("KPILOT_MODEL", cfg.model)
+        cfg.namespace = os.environ.get("KPILOT_NAMESPACE", cfg.namespace)
         cfg.kubeconfig = os.environ.get(
             "KUBECONFIG",
             str(Path.home() / ".kube" / "config"),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from typing import ClassVar
 
 from textual.app import App, ComposeResult
@@ -11,11 +12,12 @@ from kpilot.config import Config
 from kpilot.kube.client import KubeClient
 from kpilot.agent.loop import AgentLoop, AgentEvent
 from kpilot.ui.theme import APP_CSS
-from kpilot.ui.header import Header
+from kpilot.ui.header import HeaderBar, CrumbBar
 from kpilot.ui.resource_panel import ResourcePanel, ResourceTypeChanged
-from kpilot.ui.chat_panel import ChatPanel, ChatSubmitted
+from kpilot.ui.chat_panel import CopilotPanel, CopilotSubmitted
 from kpilot.ui.command_log import CommandLog
 
+# Maps resource panel index -> kube client method
 RESOURCE_FETCH = {
     0: "list_pods",
     1: "list_services",
@@ -24,24 +26,36 @@ RESOURCE_FETCH = {
     4: "list_nodes",
 }
 
+# k9s-style command aliases -> resource index
+COMMAND_ALIASES: dict[str, int] = {
+    "pod": 0, "pods": 0, "po": 0,
+    "svc": 1, "service": 1, "services": 1,
+    "deploy": 2, "deployment": 2, "deployments": 2, "dp": 2,
+    "ns": 3, "namespace": 3, "namespaces": 3,
+    "node": 4, "nodes": 4, "no": 4,
+}
+
 
 class KPilotApp(App):
-    """Kubernetes TUI with Claude AI Copilot."""
+    """Kubernetes TUI with AI Copilot — k9s-style interface."""
 
     CSS = APP_CSS
 
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("q", "quit", "Quit", show=False),
-        Binding("1", "resource(0)", "Pods", show=False),
-        Binding("2", "resource(1)", "Services", show=False),
-        Binding("3", "resource(2)", "Deployments", show=False),
-        Binding("4", "resource(3)", "Namespaces", show=False),
-        Binding("5", "resource(4)", "Nodes", show=False),
-        Binding("c", "focus_chat", "Chat", show=False),
-        Binding("escape", "focus_resources", "Resources", show=False),
-        Binding("question_mark", "toggle_help", "Help", show=False),
+        # k9s-style navigation
         Binding("colon", "command_mode", "Command", show=False),
         Binding("slash", "filter_mode", "Filter", show=False),
+        Binding("question_mark", "toggle_help", "Help", show=False),
+        Binding("escape", "go_back", "Back", show=False),
+        # Copilot toggle
+        Binding("c", "toggle_copilot", "Copilot", show=False),
+        # Resource actions (k9s-style)
+        Binding("d", "describe", "Describe", show=False),
+        Binding("y", "yaml", "YAML", show=False),
+        Binding("l", "logs", "Logs", show=False),
+        Binding("s", "shell", "Shell", show=False),
+        # Quit
+        Binding("ctrl+c", "quit", "Quit", show=False),
     ]
 
     def __init__(self, config: Config) -> None:
@@ -51,66 +65,96 @@ class KPilotApp(App):
         self.agent = AgentLoop(model=config.model if config.model else None)
         self._agent_running = False
         self._current_tool_name = ""
+        self._copilot_visible = False
 
     def compose(self) -> ComposeResult:
-        yield Header(
-            cluster=self.kube.info.cluster_name,
-            context=self.kube.info.context_name,
-            namespace=self.kube.namespace,
-        )
+        yield HeaderBar()
+        yield CrumbBar()
         with Horizontal(id="main-container"):
             yield ResourcePanel()
-            yield ChatPanel()
+            yield CopilotPanel()
         yield CommandLog()
-        yield Input(placeholder=":command...", id="command-input")
+        yield Input(placeholder="", id="filter-bar")
+        yield Input(placeholder="", id="command-bar")
         yield Static("", id="help-modal")
 
     def on_mount(self) -> None:
         self.kube.connect()
 
-        header = self.query_one(Header)
+        # Update header with real cluster info
+        header = self.query_one(HeaderBar)
         header.cluster = self.kube.info.cluster_name
         header.context = self.kube.info.context_name
-        header.namespace = self.kube.namespace
+        header.k8s_version = self._get_k8s_version()
         header.refresh_header()
 
+        # Configure agent
         self.agent.cluster_name = self.kube.info.cluster_name
         self.agent.context_name = self.kube.info.context_name
         self.agent.namespace = self.kube.namespace
 
+        # Update breadcrumb
+        crumb = self.query_one(CrumbBar)
+        crumb.set_view("Pods", self.kube.namespace)
+
+        # Log startup
         cmd_log = self.query_one(CommandLog)
         if self.kube.connected:
             cmd_log.log_info(
-                f"Connected to cluster: {self.kube.info.cluster_name} "
-                f"(ctx: {self.kube.info.context_name})"
+                f"Connected: {self.kube.info.context_name}"
+                f" ({self.kube.info.cluster_name})"
             )
         else:
             cmd_log.log_error("kube", "Not connected to any cluster")
 
-        if not self.config.anthropic_key:
-            cmd_log.log_info(
-                "ANTHROPIC_API_KEY not set -- Claude chat requires it"
-            )
-
+        # Initial data + periodic refresh
         self._refresh_resources()
         self.set_interval(5.0, self._refresh_resources)
         self._focus_table()
 
-    # ── Actions ─────────────────────────────────────────────────
+    # ── Actions (k9s-style) ─────────────────────────────────────
 
-    def action_resource(self, index: int) -> None:
-        panel = self.query_one(ResourcePanel)
-        panel.set_resource_type(index)
-        self._focus_table()
+    def action_command_mode(self) -> None:
+        cmd_bar = self.query_one("#command-bar", Input)
+        cmd_bar.add_class("visible")
+        cmd_bar.value = ""
+        cmd_bar.placeholder = ":"
+        cmd_bar.focus()
 
-    def action_focus_chat(self) -> None:
-        self.query_one(ChatPanel).focus_input()
+    def action_filter_mode(self) -> None:
+        filter_bar = self.query_one("#filter-bar", Input)
+        filter_bar.add_class("visible")
+        filter_bar.value = ""
+        filter_bar.placeholder = "/"
+        filter_bar.focus()
 
-    def action_focus_resources(self) -> None:
-        self.query_one("#filter-input", Input).remove_class("visible")
-        self.query_one("#command-input", Input).remove_class("visible")
+    def action_go_back(self) -> None:
+        """Esc: close overlays, clear filter, or unfocus copilot."""
+        # Close filter/command bars
+        self.query_one("#filter-bar", Input).remove_class("visible")
+        self.query_one("#command-bar", Input).remove_class("visible")
         self.query_one("#help-modal", Static).remove_class("visible")
+
+        # Clear filter
+        panel = self.query_one(ResourcePanel)
+        if panel._filter:
+            panel.clear_filter()
+            self.query_one(CrumbBar).set_filter("")
+            self._refresh_resources()
+
         self._focus_table()
+
+    def action_toggle_copilot(self) -> None:
+        copilot = self.query_one(CopilotPanel)
+        self._copilot_visible = not self._copilot_visible
+        if self._copilot_visible:
+            copilot.add_class("visible")
+            copilot.focus_input()
+            self.query_one(CrumbBar).set_copilot_active(True)
+        else:
+            copilot.remove_class("visible")
+            self.query_one(CrumbBar).set_copilot_active(False)
+            self._focus_table()
 
     def action_toggle_help(self) -> None:
         modal = self.query_one("#help-modal", Static)
@@ -118,34 +162,25 @@ class KPilotApp(App):
             modal.remove_class("visible")
             self._focus_table()
         else:
-            modal.update(
-                "[bold rgb(127,255,212)]Keybindings[/]\n\n"
-                "  [bold]1-5[/]    Switch resource type\n"
-                "  [bold]c[/]      Focus Claude chat input\n"
-                "  [bold]:[/]      Command mode\n"
-                "  [bold]/[/]      Filter resources\n"
-                "  [bold]?[/]      Toggle this help\n"
-                "  [bold]Esc[/]    Return to resource panel\n"
-                "  [bold]q[/]      Quit\n\n"
-                "[bold]Commands:[/]\n"
-                "  :pods, :svc, :deploy, :ns, :nodes\n"
-                "  :ns <name>       Switch namespace\n"
-                "  :kubectl <cmd>   Run kubectl command\n"
-            )
+            modal.update(self._build_help_text())
             modal.add_class("visible")
             modal.focus()
 
-    def action_command_mode(self) -> None:
-        cmd_input = self.query_one("#command-input", Input)
-        cmd_input.add_class("visible")
-        cmd_input.value = ""
-        cmd_input.focus()
+    def action_describe(self) -> None:
+        """d: describe selected resource via copilot."""
+        self._ask_copilot_about_selected("describe")
 
-    def action_filter_mode(self) -> None:
-        filter_input = self.query_one("#filter-input", Input)
-        filter_input.add_class("visible")
-        filter_input.value = ""
-        filter_input.focus()
+    def action_yaml(self) -> None:
+        """y: show YAML of selected resource via copilot."""
+        self._ask_copilot_about_selected("yaml")
+
+    def action_logs(self) -> None:
+        """l: show logs of selected pod via copilot."""
+        self._ask_copilot_about_selected("logs")
+
+    def action_shell(self) -> None:
+        """s: exec into selected pod via copilot."""
+        self._ask_copilot_about_selected("shell")
 
     def action_quit(self) -> None:
         self.agent.cancel()
@@ -154,22 +189,26 @@ class KPilotApp(App):
     # ── Event handlers ──────────────────────────────────────────
 
     def on_resource_type_changed(self, event: ResourceTypeChanged) -> None:
+        crumb = self.query_one(CrumbBar)
+        crumb.set_view(event.name, self.kube.namespace)
         self._refresh_resources()
 
-    def on_chat_submitted(self, event: ChatSubmitted) -> None:
+    def on_copilot_submitted(self, event: CopilotSubmitted) -> None:
         if self._agent_running:
             return
         self._run_agent(event.text)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "command-input":
+        if event.input.id == "command-bar":
             event.input.remove_class("visible")
             self._handle_command(event.value.strip())
             self._focus_table()
-        elif event.input.id == "filter-input":
+        elif event.input.id == "filter-bar":
             event.input.remove_class("visible")
+            filt = event.value.strip()
             panel = self.query_one(ResourcePanel)
-            panel.set_filter(event.value.strip())
+            panel.set_filter(filt)
+            self.query_one(CrumbBar).set_filter(filt)
             self._refresh_resources()
             self._focus_table()
 
@@ -177,10 +216,20 @@ class KPilotApp(App):
 
     def _focus_table(self) -> None:
         try:
-            table = self.query_one("#resource-table", DataTable)
-            table.focus()
+            self.query_one("#resource-table", DataTable).focus()
         except Exception:
             pass
+
+    def _get_k8s_version(self) -> str:
+        if not self.kube.connected:
+            return ""
+        try:
+            v = self.kube._core.api_client.call_api(
+                "/version", "GET", response_type="object"
+            )
+            return v[0].get("gitVersion", "") if isinstance(v[0], dict) else ""
+        except Exception:
+            return ""
 
     def _refresh_resources(self) -> None:
         panel = self.query_one(ResourcePanel)
@@ -196,99 +245,169 @@ class KPilotApp(App):
             panel.update_data(["ERROR"], [[str(e)]])
 
     def _handle_command(self, cmd: str) -> None:
+        """Process k9s-style : commands."""
         if not cmd:
             return
         cmd_log = self.query_one(CommandLog)
         panel = self.query_one(ResourcePanel)
 
-        cmd_lower = cmd.lower()
-        if cmd_lower in ("pods", "pod"):
-            panel.set_resource_type(0)
-        elif cmd_lower in ("svc", "services", "service"):
-            panel.set_resource_type(1)
-        elif cmd_lower in ("deploy", "deployments", "deployment"):
-            panel.set_resource_type(2)
-        elif cmd_lower in ("ns", "namespaces", "namespace"):
-            panel.set_resource_type(3)
-        elif cmd_lower in ("nodes", "node"):
-            panel.set_resource_type(4)
-        elif cmd_lower.startswith("ns "):
-            new_ns = cmd[3:].strip()
-            if new_ns:
-                self.kube.set_namespace(new_ns)
-                self.agent.namespace = new_ns
-                self.query_one(Header).set_namespace(new_ns)
-                cmd_log.log_info(f"Switched namespace to: {new_ns}")
-                self._refresh_resources()
-        elif cmd_lower.startswith("kubectl "):
-            kubectl_cmd = cmd[8:].strip()
-            cmd_log.log_tool("kubectl", kubectl_cmd)
-            try:
-                import subprocess
+        parts = cmd.split(None, 1)
+        verb = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
 
-                result = subprocess.run(
-                    ["kubectl"] + kubectl_cmd.split(),
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                output = result.stdout or result.stderr
-                cmd_log.log_ok("kubectl", output.strip()[:200])
-            except Exception as e:
-                cmd_log.log_error("kubectl", str(e))
-        else:
-            cmd_log.log_error("cmd", f"Unknown command: {cmd}")
+        # :q / :quit
+        if verb in ("q", "quit"):
+            self.action_quit()
+            return
+
+        # :ns <name> — switch namespace
+        if verb == "ns" and arg:
+            self.kube.set_namespace(arg)
+            self.agent.namespace = arg
+            self.query_one(CrumbBar).set_view(
+                panel.current_type_name, arg
+            )
+            cmd_log.log_info(f"Namespace: {arg}")
+            self._refresh_resources()
+            return
+
+        # Resource navigation aliases
+        if verb in COMMAND_ALIASES:
+            idx = COMMAND_ALIASES[verb]
+            panel.set_resource_type(idx)
+            return
+
+        # :ctx — list/switch contexts (show in copilot)
+        if verb == "ctx":
+            if arg:
+                cmd_log.log_info(f"Context switching not yet supported: {arg}")
+            else:
+                cmd_log.log_info("Use KUBECONFIG or kubectl to switch context")
+            return
+
+        # :xray, :pulses — not implemented
+        if verb in ("xray", "pulses", "pu"):
+            cmd_log.log_info(f":{verb} not yet supported")
+            return
+
+        # Fallback: try as kubectl
+        cmd_log.log_tool("kubectl", cmd)
+        try:
+            result = subprocess.run(
+                ["kubectl"] + cmd.split(),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            output = result.stdout or result.stderr
+            cmd_log.log_ok("kubectl", output.strip()[:200])
+        except Exception as e:
+            cmd_log.log_error("kubectl", str(e))
+
+    def _ask_copilot_about_selected(self, action: str) -> None:
+        """Use copilot to perform an action on the selected resource."""
+        panel = self.query_one(ResourcePanel)
+        name = panel.get_selected_name()
+        if not name:
+            return
+
+        resource_type = panel.current_type_name.lower().rstrip("s")
+        ns = self.kube.namespace
+
+        prompts = {
+            "describe": f"kubectl describe {resource_type} {name} -n {ns}",
+            "yaml": f"kubectl get {resource_type} {name} -n {ns} -o yaml",
+            "logs": f"kubectl logs {name} -n {ns} --tail=100",
+            "shell": f"Explain how to exec into pod {name} in namespace {ns}. Do NOT actually exec.",
+        }
+        prompt = prompts.get(action, f"kubectl describe {resource_type} {name} -n {ns}")
+
+        # Show copilot if hidden
+        if not self._copilot_visible:
+            self.action_toggle_copilot()
+
+        if not self._agent_running:
+            self._run_agent(prompt)
 
     def _run_agent(self, prompt: str) -> None:
-        chat = self.query_one(ChatPanel)
+        copilot = self.query_one(CopilotPanel)
         cmd_log = self.query_one(CommandLog)
 
-        chat.add_user_message(prompt)
-        chat.add_status("Claude is thinking...")
-        cmd_log.log_info(f"Claude query: {prompt[:80]}")
+        copilot.add_user_message(prompt)
+        copilot.add_status("thinking...")
+        cmd_log.log_info(f"copilot: {prompt[:80]}")
 
         self._agent_running = True
         self._current_tool_name = ""
 
         self.run_worker(
             self._agent_worker(prompt),
-            name="claude_agent",
+            name="copilot_agent",
             exclusive=True,
         )
 
     async def _agent_worker(self, prompt: str) -> None:
-        """Worker coroutine that runs the agent loop."""
         try:
             await self.agent.run(prompt, on_event=self._on_agent_event)
         finally:
             self._agent_running = False
-            chat = self.query_one(ChatPanel)
-            chat.add_separator()
+            self.query_one(CopilotPanel).add_separator()
 
     def _on_agent_event(self, event: AgentEvent) -> None:
-        """Called from the agent async worker for each event."""
-        chat = self.query_one(ChatPanel)
+        copilot = self.query_one(CopilotPanel)
         cmd_log = self.query_one(CommandLog)
 
         if event.kind == "text":
-            chat.add_assistant_text(event.text)
+            copilot.add_assistant_text(event.text)
         elif event.kind == "thinking":
-            chat.add_status(f"[thinking] {event.text[:100]}...")
+            copilot.add_status(f"thinking: {event.text[:80]}...")
         elif event.kind == "tool_use":
             self._current_tool_name = event.tool_name
-            chat.add_tool_call(event.tool_name, event.tool_input)
+            copilot.add_tool_call(event.tool_name, event.tool_input)
             cmd_log.log_tool(event.tool_name, event.tool_input[:100])
         elif event.kind == "tool_result":
             name = self._current_tool_name or "tool"
             if event.is_error:
-                chat.add_tool_result(event.text, True)
+                copilot.add_tool_result(event.text, True)
                 cmd_log.log_error(name, event.text[:100])
             else:
-                chat.add_tool_result(event.text, False)
+                copilot.add_tool_result(event.text, False)
                 cmd_log.log_ok(name, event.text[:100])
             self._refresh_resources()
         elif event.kind == "error":
-            chat.add_error(event.text)
-            cmd_log.log_error("claude", event.text)
+            copilot.add_error(event.text)
+            cmd_log.log_error("copilot", event.text)
         elif event.kind == "done":
             self._agent_running = False
+
+    def _build_help_text(self) -> str:
+        return (
+            "[bold #00d7af]kpilot — Keyboard Shortcuts[/]\n"
+            "\n"
+            "[bold #d7af00]Navigation[/]\n"
+            "  [bold]:[/]          Command mode\n"
+            "  [bold]/[/]          Filter resources\n"
+            "  [bold]Esc[/]        Go back / clear filter\n"
+            "  [bold]?[/]          Toggle this help\n"
+            "  [bold]Ctrl-c[/]     Quit\n"
+            "\n"
+            "[bold #d7af00]Resource Actions[/]\n"
+            "  [bold]d[/]          Describe selected resource\n"
+            "  [bold]y[/]          Show YAML of selected resource\n"
+            "  [bold]l[/]          View logs (pods)\n"
+            "  [bold]s[/]          Shell info (pods)\n"
+            "  [bold]Enter[/]      Select\n"
+            "\n"
+            "[bold #d7af00]Copilot[/]\n"
+            "  [bold]c[/]          Toggle copilot panel\n"
+            "  Type a question and press Enter\n"
+            "\n"
+            "[bold #d7af00]Commands[/]  (press : first)\n"
+            "  :po :pods          Pods\n"
+            "  :svc :service      Services\n"
+            "  :dp :deploy        Deployments\n"
+            "  :ns                Namespaces\n"
+            "  :ns <name>         Switch namespace\n"
+            "  :no :nodes         Nodes\n"
+            "  :q :quit           Quit\n"
+        )
