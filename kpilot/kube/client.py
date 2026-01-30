@@ -168,6 +168,126 @@ class KubeClient:
             ])
         return headers, rows
 
+    def list_configmaps(
+        self, namespace: str = ""
+    ) -> tuple[list[str], list[list[str]]]:
+        ns = namespace or self.namespace
+        if not self._core:
+            return ["ERROR"], [["Not connected to cluster"]]
+        cms = self._core.list_namespaced_config_map(ns)
+        headers = ["NAME", "DATA", "AGE"]
+        rows = []
+        for cm in cms.items:
+            rows.append([
+                cm.metadata.name,
+                str(len(cm.data or {})),
+                _age(cm.metadata.creation_timestamp),
+            ])
+        return headers, rows
+
+    def list_secrets(
+        self, namespace: str = ""
+    ) -> tuple[list[str], list[list[str]]]:
+        ns = namespace or self.namespace
+        if not self._core:
+            return ["ERROR"], [["Not connected to cluster"]]
+        secrets = self._core.list_namespaced_secret(ns)
+        headers = ["NAME", "TYPE", "DATA", "AGE"]
+        rows = []
+        for s in secrets.items:
+            rows.append([
+                s.metadata.name,
+                s.type or "",
+                str(len(s.data or {})),
+                _age(s.metadata.creation_timestamp),
+            ])
+        return headers, rows
+
+    def list_pvcs(
+        self, namespace: str = ""
+    ) -> tuple[list[str], list[list[str]]]:
+        ns = namespace or self.namespace
+        if not self._core:
+            return ["ERROR"], [["Not connected to cluster"]]
+        pvcs = self._core.list_namespaced_persistent_volume_claim(ns)
+        headers = ["NAME", "STATUS", "VOLUME", "CAPACITY", "ACCESS MODES", "AGE"]
+        rows = []
+        for pvc in pvcs.items:
+            rows.append([
+                pvc.metadata.name,
+                pvc.status.phase or "",
+                pvc.spec.volume_name or "",
+                (pvc.status.capacity or {}).get("storage", ""),
+                ",".join(pvc.spec.access_modes or []),
+                _age(pvc.metadata.creation_timestamp),
+            ])
+        return headers, rows
+
+    def list_events(
+        self, namespace: str = ""
+    ) -> tuple[list[str], list[list[str]]]:
+        ns = namespace or self.namespace
+        if not self._core:
+            return ["ERROR"], [["Not connected to cluster"]]
+        events = self._core.list_namespaced_event(ns)
+        headers = ["TYPE", "REASON", "OBJECT", "MESSAGE", "AGE"]
+        rows = []
+        for ev in events.items:
+            obj = ""
+            if ev.involved_object:
+                kind = ev.involved_object.kind or ""
+                name = ev.involved_object.name or ""
+                obj = f"{kind}/{name}"
+            msg = (ev.message or "")[:80]
+            rows.append([
+                ev.type or "",
+                ev.reason or "",
+                obj,
+                msg,
+                _age(ev.last_timestamp or ev.metadata.creation_timestamp),
+            ])
+        return headers, rows
+
+    def list_contexts(self) -> list[tuple[str, bool]]:
+        """Return list of (context_name, is_active) tuples."""
+        try:
+            contexts, active = k8s_config.list_kube_config_contexts(
+                config_file=self.kubeconfig
+            )
+            active_name = active.get("name", "") if active else ""
+            return [
+                (ctx.get("name", ""), ctx.get("name", "") == active_name)
+                for ctx in contexts
+            ]
+        except Exception:
+            return []
+
+    def switch_context(self, context_name: str) -> bool:
+        """Switch to a different kubeconfig context. Returns True on success."""
+        try:
+            k8s_config.load_kube_config(
+                config_file=self.kubeconfig, context=context_name
+            )
+            # Re-read context info
+            contexts, active = k8s_config.list_kube_config_contexts(
+                config_file=self.kubeconfig
+            )
+            for ctx in contexts:
+                if ctx.get("name") == context_name:
+                    self.info.context_name = context_name
+                    c = ctx.get("context", {})
+                    self.info.cluster_name = c.get("cluster", "")
+                    ns = c.get("namespace", "")
+                    if ns:
+                        self.namespace = ns
+                        self.info.namespace = ns
+                    break
+            self._core = k8s_client.CoreV1Api()
+            self._apps = k8s_client.AppsV1Api()
+            return True
+        except Exception:
+            return False
+
 
 def _age(ts) -> str:
     if ts is None:

@@ -104,24 +104,36 @@ DataTable > .datatable--odd-row {
     dock: bottom;
     height: 1;
     display: none;
+    border: none;
     padding: 0 1;
     background: #1a1a2e;
+    color: #ffffff;
 }
 
 #filter-bar.visible {
     display: block;
 }
 
+#filter-bar:focus {
+    border: none;
+}
+
 #command-bar {
     dock: bottom;
     height: 1;
     display: none;
+    border: none;
     padding: 0 1;
     background: #1a1a2e;
+    color: #ffffff;
 }
 
 #command-bar.visible {
     display: block;
+}
+
+#command-bar:focus {
+    border: none;
 }
 
 /* ── Help modal ──────────────────────────────────── */
