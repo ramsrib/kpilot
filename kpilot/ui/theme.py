@@ -1,98 +1,137 @@
-"""CSS theme for the kpilot TUI."""
+"""CSS theme for kpilot — k9s-inspired dark theme."""
 
 APP_CSS = """
 Screen {
-    background: $surface;
+    background: #111111;
 }
 
-#header {
+/* ── Header ──────────────────────────────────────── */
+
+#header-bar {
     dock: top;
     height: 1;
-    background: rgb(20, 60, 120);
-    color: white;
+    background: #0a2351;
+    color: #ffffff;
     padding: 0 1;
 }
+
+#crumb-bar {
+    dock: top;
+    height: 1;
+    background: #1a1a2e;
+    color: #aaaaaa;
+    padding: 0 1;
+}
+
+/* ── Main layout ─────────────────────────────────── */
 
 #main-container {
     height: 1fr;
 }
 
 #resource-panel {
-    width: 3fr;
-    border: solid rgb(0, 135, 135);
-    border-title-color: rgb(127, 255, 212);
+    width: 1fr;
+    border: solid #444466;
 }
 
-#chat-panel {
+#copilot-panel {
     width: 2fr;
-    border: solid rgb(0, 135, 135);
-    border-title-color: rgb(127, 255, 212);
+    border: solid #444466;
+    border-title-color: #00d7af;
+    display: none;
 }
 
-#chat-log {
+#copilot-panel.visible {
+    display: block;
+}
+
+#copilot-log {
     height: 1fr;
     scrollbar-size: 1 1;
     padding: 0 1;
 }
 
-#chat-input {
+#copilot-input {
     dock: bottom;
     height: 3;
     padding: 0 1;
-    border-top: solid rgb(0, 135, 135);
+    border-top: solid #444466;
 }
 
-#chat-input:focus {
-    border-top: solid rgb(127, 255, 212);
+#copilot-input:focus {
+    border-top: solid #00d7af;
 }
 
-#command-log {
-    dock: bottom;
-    height: 7;
-    border: solid rgb(0, 135, 135);
-    border-title-color: rgb(127, 255, 212);
-    scrollbar-size: 1 1;
-    padding: 0 1;
-}
-
-#resource-tabs {
-    height: 1;
-    padding: 0 1;
-    background: rgb(30, 40, 50);
-}
+/* ── Resource table ──────────────────────────────── */
 
 #resource-table {
     height: 1fr;
 }
 
-#filter-input {
+DataTable > .datatable--header {
+    color: #d7af00;
+    text-style: bold;
+    background: #1a1a2e;
+}
+
+DataTable > .datatable--cursor {
+    background: #00d7af;
+    color: #000000;
+}
+
+DataTable > .datatable--even-row {
+    background: #111111;
+}
+
+DataTable > .datatable--odd-row {
+    background: #151520;
+}
+
+/* ── Command log ─────────────────────────────────── */
+
+#command-log {
+    dock: bottom;
+    height: 7;
+    border: solid #444466;
+    border-title-color: #00d7af;
+    scrollbar-size: 1 1;
+    padding: 0 1;
+}
+
+/* ── Filter & command inputs ─────────────────────── */
+
+#filter-bar {
     dock: bottom;
     height: 1;
     display: none;
     padding: 0 1;
+    background: #1a1a2e;
 }
 
-#filter-input.visible {
+#filter-bar.visible {
     display: block;
 }
 
-#command-input {
+#command-bar {
     dock: bottom;
     height: 1;
     display: none;
     padding: 0 1;
+    background: #1a1a2e;
 }
 
-#command-input.visible {
+#command-bar.visible {
     display: block;
 }
+
+/* ── Help modal ──────────────────────────────────── */
 
 #help-modal {
     align: center middle;
-    width: 60;
-    height: 20;
-    border: solid rgb(127, 255, 212);
-    background: rgb(20, 30, 40);
+    width: 70;
+    height: 30;
+    border: solid #00d7af;
+    background: #0a0a1a;
     padding: 1 2;
     layer: modal;
     display: none;
@@ -100,15 +139,5 @@ Screen {
 
 #help-modal.visible {
     display: block;
-}
-
-DataTable > .datatable--header {
-    color: rgb(255, 255, 0);
-    text-style: bold;
-}
-
-DataTable > .datatable--cursor {
-    background: rgb(127, 255, 212);
-    color: rgb(0, 0, 0);
 }
 """
