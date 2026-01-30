@@ -24,6 +24,10 @@ RESOURCE_FETCH = {
     2: "list_deployments",
     3: "list_namespaces",
     4: "list_nodes",
+    5: "list_configmaps",
+    6: "list_secrets",
+    7: "list_pvcs",
+    8: "list_events",
 }
 
 # k9s-style command aliases -> resource index
@@ -31,8 +35,12 @@ COMMAND_ALIASES: dict[str, int] = {
     "pod": 0, "pods": 0, "po": 0,
     "svc": 1, "service": 1, "services": 1,
     "deploy": 2, "deployment": 2, "deployments": 2, "dp": 2,
-    "ns": 3, "namespace": 3, "namespaces": 3,
+    "namespace": 3, "namespaces": 3,
     "node": 4, "nodes": 4, "no": 4,
+    "cm": 5, "configmap": 5, "configmaps": 5,
+    "sec": 6, "secret": 6, "secrets": 6,
+    "pvc": 7, "persistentvolumeclaim": 7, "persistentvolumeclaims": 7,
+    "ev": 8, "event": 8, "events": 8,
 }
 
 
@@ -117,15 +125,15 @@ class KPilotApp(App):
     def action_command_mode(self) -> None:
         cmd_bar = self.query_one("#command-bar", Input)
         cmd_bar.add_class("visible")
-        cmd_bar.value = ""
-        cmd_bar.placeholder = ":"
+        cmd_bar.value = ":"
+        cmd_bar.placeholder = ""
         cmd_bar.focus()
 
     def action_filter_mode(self) -> None:
         filter_bar = self.query_one("#filter-bar", Input)
         filter_bar.add_class("visible")
-        filter_bar.value = ""
-        filter_bar.placeholder = "/"
+        filter_bar.value = "/"
+        filter_bar.placeholder = ""
         filter_bar.focus()
 
     def action_go_back(self) -> None:
@@ -201,11 +209,12 @@ class KPilotApp(App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "command-bar":
             event.input.remove_class("visible")
-            self._handle_command(event.value.strip())
+            cmd = event.value.strip().lstrip(":")
+            self._handle_command(cmd)
             self._focus_table()
         elif event.input.id == "filter-bar":
             event.input.remove_class("visible")
-            filt = event.value.strip()
+            filt = event.value.strip().lstrip("/")
             panel = self.query_one(ResourcePanel)
             panel.set_filter(filt)
             self.query_one(CrumbBar).set_filter(filt)
@@ -261,7 +270,7 @@ class KPilotApp(App):
             return
 
         # :ns <name> — switch namespace
-        if verb == "ns" and arg:
+        if verb in ("ns", "namespace") and arg:
             self.kube.set_namespace(arg)
             self.agent.namespace = arg
             self.query_one(CrumbBar).set_view(
@@ -271,18 +280,39 @@ class KPilotApp(App):
             self._refresh_resources()
             return
 
+        # :ctx / :context — list or switch context
+        if verb in ("ctx", "context"):
+            if arg:
+                ok = self.kube.switch_context(arg)
+                if ok:
+                    self.agent.cluster_name = self.kube.info.cluster_name
+                    self.agent.context_name = self.kube.info.context_name
+                    self.agent.namespace = self.kube.namespace
+                    header = self.query_one(HeaderBar)
+                    header.cluster = self.kube.info.cluster_name
+                    header.context = self.kube.info.context_name
+                    header.refresh_header()
+                    self.query_one(CrumbBar).set_view(
+                        panel.current_type_name, self.kube.namespace
+                    )
+                    cmd_log.log_ok("ctx", f"Switched to {arg}")
+                    self._refresh_resources()
+                else:
+                    cmd_log.log_error("ctx", f"Failed to switch to {arg}")
+            else:
+                contexts = self.kube.list_contexts()
+                if contexts:
+                    for name, active in contexts:
+                        marker = " *" if active else ""
+                        cmd_log.log_info(f"  {name}{marker}")
+                else:
+                    cmd_log.log_error("ctx", "No contexts found")
+            return
+
         # Resource navigation aliases
         if verb in COMMAND_ALIASES:
             idx = COMMAND_ALIASES[verb]
             panel.set_resource_type(idx)
-            return
-
-        # :ctx — list/switch contexts (show in copilot)
-        if verb == "ctx":
-            if arg:
-                cmd_log.log_info(f"Context switching not yet supported: {arg}")
-            else:
-                cmd_log.log_info("Use KUBECONFIG or kubectl to switch context")
             return
 
         # :xray, :pulses — not implemented
@@ -409,5 +439,11 @@ class KPilotApp(App):
             "  :ns                Namespaces\n"
             "  :ns <name>         Switch namespace\n"
             "  :no :nodes         Nodes\n"
+            "  :cm                ConfigMaps\n"
+            "  :sec               Secrets\n"
+            "  :pvc               PersistentVolumeClaims\n"
+            "  :ev                Events\n"
+            "  :ctx               List contexts\n"
+            "  :ctx <name>        Switch context\n"
             "  :q :quit           Quit\n"
         )

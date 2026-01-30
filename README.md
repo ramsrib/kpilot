@@ -39,6 +39,9 @@ Built with [Textual](https://textual.textualize.io/) and [Claude Code SDK](https
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
 - `kubectl` configured and on your `PATH`
 - Access to a Kubernetes cluster (via `~/.kube/config` or `KUBECONFIG`)
+- **One of:**
+  - A [Claude Code subscription](https://claude.ai) (Pro or Max plan) — just be logged in via `claude`
+  - An `ANTHROPIC_API_KEY` environment variable
 
 ## Install
 
@@ -60,16 +63,21 @@ kpilot is configured via environment variables:
 
 | Variable | Description | Default |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key (required for copilot) | — |
+| `ANTHROPIC_API_KEY` | Anthropic API key (not needed with Claude Code subscription) | — |
 | `KUBECONFIG` | Path to kubeconfig file | `~/.kube/config` |
 | `KPILOT_NAMESPACE` | Default namespace | `default` |
 | `KPILOT_MODEL` | Claude model to use | `claude-sonnet-4-20250514` |
 
-Example:
+The copilot works in two modes:
+
+1. **Claude Code subscription** — if `claude` is installed and you're logged in, it just works. No API key needed.
+2. **API key** — set `ANTHROPIC_API_KEY` for direct API access.
 
 ```bash
+# Option 1: subscription — nothing to set, just have `claude` logged in
+
+# Option 2: API key
 export ANTHROPIC_API_KEY="sk-ant-..."
-export KPILOT_NAMESPACE="my-app"
 ```
 
 ## Usage
@@ -85,7 +93,7 @@ uv run python -m kpilot.main
 kpilot
 ```
 
-The TUI launches immediately. The resource browser works without an API key — the copilot panel requires one.
+The TUI launches immediately. The resource browser works without any auth — the copilot panel requires either a Claude Code subscription or an API key.
 
 ## Keybindings
 
